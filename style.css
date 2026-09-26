@@ -265,6 +265,87 @@ button {
 .station-card.rain-active { border-left-color: var(--rain-active); background: var(--rain-active-tint); }
 .station-card.rain-active .station-value { color: var(--rain-active); }
 
+.station-card.clickable {
+  cursor: pointer;
+}
+
+.station-card.clickable:active {
+  background: var(--primary-tint);
+}
+
+/* =========================================================
+   モーダル / ダイアログ（グラフ表示）
+   ========================================================= */
+dialog {
+  border: none;
+  border-radius: var(--radius);
+  padding: 0;
+  width: 94%;
+  max-width: 640px;
+  max-height: 85vh;
+  overflow: hidden;
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dialog-head h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.dialog-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: var(--muted);
+  line-height: 1;
+  padding: 4px;
+}
+
+.dialog-body {
+  padding: 14px 16px;
+  overflow-y: auto;
+  max-height: calc(85vh - 56px);
+}
+
+.chart-range-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.range-btn {
+  flex: 1;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  padding: 6px 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.range-btn.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.chart-wrap {
+  position: relative;
+  height: 280px;
+}
+
 /* =========================================================
    レスポンシブ
    ========================================================= */

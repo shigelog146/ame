@@ -7,6 +7,7 @@
   <title>益田地域 河川水位・雨量情報</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 
 <body>
@@ -50,6 +51,27 @@
     </section>
 
   </main>
+
+  <!-- =========================================================
+       グラフダイアログ（観測所カードをタップすると開く）
+       ========================================================= -->
+  <dialog id="chartDialog">
+    <div class="dialog-head">
+      <h2 id="chartDialogTitle">観測所名</h2>
+      <button class="dialog-close" data-close-dialog="chartDialog">✕</button>
+    </div>
+    <div class="dialog-body">
+      <div class="chart-range-tabs">
+        <button class="range-btn active" data-hours="24">24時間</button>
+        <button class="range-btn" data-hours="72">3日間</button>
+        <button class="range-btn" data-hours="168">7日間</button>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="historyChart"></canvas>
+      </div>
+      <div id="chartLoading" class="loading" style="display:none;">読み込み中...</div>
+    </div>
+  </dialog>
 
   <!-- =========================================================
        JavaScript
@@ -154,6 +176,30 @@
       return latest;
     }
 
+    async function fetchWaterHistory(stationId, hours) {
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from("water_level_observations")
+        .select("observed_at, water_level")
+        .eq("station_id", stationId)
+        .gte("observed_at", since)
+        .order("observed_at", { ascending: true });
+      if (error) throw error;
+      return data ?? [];
+    }
+
+    async function fetchRainHistory(stationId, hours) {
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from("rainfall_observations")
+        .select("observed_at, rain_10min, rain_cumulative")
+        .eq("station_id", stationId)
+        .gte("observed_at", since)
+        .order("observed_at", { ascending: true });
+      if (error) throw error;
+      return data ?? [];
+    }
+
     /* =========================================================
        描画
        ========================================================= */
@@ -190,7 +236,7 @@
             : "";
 
         return `
-          <div class="station-card ${severity.cls}">
+          <div class="station-card clickable ${severity.cls}" data-station-id="${station.id}" data-obs-type="water">
             <div class="station-card-main">
               <div class="station-name">
                 <span class="river-name">${station.river_name ?? ""}</span>
@@ -236,7 +282,7 @@
           : "";
 
         return `
-          <div class="station-card ${isRaining ? "rain-active" : "normal"}">
+          <div class="station-card clickable ${isRaining ? "rain-active" : "normal"}" data-station-id="${station.id}" data-obs-type="rain">
             <div class="station-card-main">
               <div class="station-name">
                 <span class="river-name">${station.river_name ?? ""}</span>
@@ -258,6 +304,181 @@
     }
 
     /* =========================================================
+       グラフ（観測所カードをタップした時に表示）
+       ========================================================= */
+    let stationsById = new Map();
+    let currentChart = null;
+    let currentDialogStation = null; // { stationId, obsType }
+
+    const chartDialog = document.getElementById("chartDialog");
+    const chartDialogTitle = document.getElementById("chartDialogTitle");
+    const chartLoading = document.getElementById("chartLoading");
+    const historyCanvas = document.getElementById("historyChart");
+    const rangeButtons = document.querySelectorAll(".range-btn");
+
+    const THRESHOLD_DEFS = [
+      { key: "waiting_level", label: "待機水位", color: "#b58a1a" },
+      { key: "caution_level", label: "氾濫注意水位", color: "#d17a1f" },
+      { key: "evacuation_level", label: "避難判断水位", color: "#c9501f" },
+      { key: "danger_level", label: "氾濫危険水位", color: "#b8332b" },
+      { key: "overflow_level", label: "氾濫発生水位", color: "#7a1f1a" },
+    ];
+
+    function destroyChart() {
+      if (currentChart) {
+        currentChart.destroy();
+        currentChart = null;
+      }
+    }
+
+    function chartLabel(iso) {
+      const d = new Date(iso);
+      return d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    }
+
+    async function renderWaterChart(station, hours) {
+      const rows = await fetchWaterHistory(station.id, hours);
+      const labels = rows.map((r) => chartLabel(r.observed_at));
+      const levels = rows.map((r) => r.water_level);
+
+      const datasets = [
+        {
+          label: "水位 (m)",
+          data: levels,
+          borderColor: "#1c6ea4",
+          backgroundColor: "rgba(28,110,164,0.12)",
+          fill: true,
+          spanGaps: true,
+          tension: 0.2,
+          pointRadius: 0,
+        },
+      ];
+
+      for (const t of THRESHOLD_DEFS) {
+        const value = station[t.key];
+        if (value === null || value === undefined) continue;
+        datasets.push({
+          label: t.label,
+          data: labels.map(() => value),
+          borderColor: t.color,
+          borderDash: [6, 4],
+          pointRadius: 0,
+          borderWidth: 1,
+        });
+      }
+
+      destroyChart();
+      currentChart = new Chart(historyCanvas, {
+        type: "line",
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
+          scales: {
+            y: { title: { display: true, text: "水位 (m)" } },
+          },
+        },
+      });
+    }
+
+    async function renderRainChart(station, hours) {
+      const rows = await fetchRainHistory(station.id, hours);
+      const labels = rows.map((r) => chartLabel(r.observed_at));
+
+      destroyChart();
+      currentChart = new Chart(historyCanvas, {
+        data: {
+          labels,
+          datasets: [
+            {
+              type: "bar",
+              label: "10分雨量 (mm)",
+              data: rows.map((r) => r.rain_10min),
+              backgroundColor: "#2464b4",
+              yAxisID: "y",
+            },
+            {
+              type: "line",
+              label: "累計雨量 (mm)",
+              data: rows.map((r) => r.rain_cumulative),
+              borderColor: "#b58a1a",
+              pointRadius: 0,
+              spanGaps: true,
+              yAxisID: "y1",
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
+          scales: {
+            y: { position: "left", title: { display: true, text: "10分雨量 (mm)" }, beginAtZero: true },
+            y1: { position: "right", title: { display: true, text: "累計 (mm)" }, beginAtZero: true, grid: { drawOnChartArea: false } },
+          },
+        },
+      });
+    }
+
+    async function openChartDialog(stationId, obsType, hours = 24) {
+      const station = stationsById.get(Number(stationId));
+      if (!station) return;
+
+      currentDialogStation = { stationId: Number(stationId), obsType };
+      chartDialogTitle.textContent = `${station.river_name ?? ""} ${station.station_name}`;
+      chartLoading.style.display = "block";
+      historyCanvas.style.display = "none";
+      chartDialog.showModal();
+
+      try {
+        if (obsType === "water") {
+          await renderWaterChart(station, hours);
+        } else {
+          await renderRainChart(station, hours);
+        }
+        chartLoading.style.display = "none";
+        historyCanvas.style.display = "block";
+      } catch (e) {
+        console.error(e);
+        chartLoading.textContent = "グラフの取得に失敗しました";
+      }
+    }
+
+    document.querySelectorAll("[data-close-dialog]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.getElementById(btn.dataset.closeDialog).close();
+      });
+    });
+
+    chartDialog.addEventListener("close", () => {
+      destroyChart();
+      chartLoading.textContent = "読み込み中...";
+      rangeButtons.forEach((b) => b.classList.toggle("active", b.dataset.hours === "24"));
+    });
+
+    rangeButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!currentDialogStation) return;
+        rangeButtons.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        chartLoading.style.display = "block";
+        historyCanvas.style.display = "none";
+        openChartDialog(currentDialogStation.stationId, currentDialogStation.obsType, Number(btn.dataset.hours));
+      });
+    });
+
+    function wireCardClicks(container) {
+      container.addEventListener("click", (e) => {
+        const card = e.target.closest(".station-card[data-station-id]");
+        if (!card) return;
+        openChartDialog(card.dataset.stationId, card.dataset.obsType, 24);
+      });
+    }
+    wireCardClicks(waterList);
+    wireCardClicks(rainList);
+
+    /* =========================================================
        メイン処理
        ========================================================= */
     async function loadAll() {
@@ -268,6 +489,8 @@
           fetchLatestWaterLevels(),
           fetchLatestRainfall(),
         ]);
+
+        stationsById = new Map(stations.map((s) => [s.id, s]));
 
         renderWaterStations(stations, waterLatest);
         renderRainStations(stations, rainLatest);
