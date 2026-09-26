@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>益田地域 河川水位・雨量情報</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+
+<body>
+
+  <!-- =========================================================
+       ヘッダー
+       ========================================================= -->
+  <header class="topbar">
+    <div class="brand">
+      <i data-lucide="waves"></i>
+      益田地域 河川水位・雨量情報
+    </div>
+    <div class="spacer"></div>
+    <button id="refreshBtn" class="icon-btn" title="更新">
+      <i data-lucide="refresh-cw"></i>
+    </button>
+  </header>
+
+  <main class="page">
+
+    <div id="updateInfo" class="update-info">読み込み中...</div>
+
+    <!-- =========================================================
+         水位セクション
+         ========================================================= -->
+    <section class="section">
+      <h2><i data-lucide="waves"></i> 水位</h2>
+      <div id="waterList" class="station-list">
+        <div class="loading">読み込み中...</div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         雨量セクション
+         ========================================================= -->
+    <section class="section">
+      <h2><i data-lucide="cloud-rain"></i> 雨量</h2>
+      <div id="rainList" class="station-list">
+        <div class="loading">読み込み中...</div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- =========================================================
+       JavaScript
+       ========================================================= -->
+  <script type="module">
+
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+
+    const supabase = createClient(
+      "https://csaatvnbaspkzrqomnvt.supabase.co",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNzYWF0dm5iYXNwa3pycW9tbnZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAyMTE3MjYsImV4cCI6MjEwNTc4NzcyNn0.DjiKrsL5NG2KBza3wiqw87Cq1U9QAeMbMtywTdhX1Rc"
+    );
+
+    const AREA = "益田";
+
+    // 過去何分ぶんの観測データを取得するか（この範囲の中から各観測所の最新1件を拾う）
+    const LOOKBACK_MINUTES = 180;
+
+    const updateInfo = document.getElementById("updateInfo");
+    const waterList = document.getElementById("waterList");
+    const rainList = document.getElementById("rainList");
+    const refreshBtn = document.getElementById("refreshBtn");
+
+    /* =========================================================
+       観測値の異常値コード（"欠測"/"保守"/"未収集" 等）を
+       人が読める文言に変換する
+       ========================================================= */
+    function statusLabel(dataStatus, rawDt) {
+      if (dataStatus === 0) return null; // 正常時は何も表示しない
+      if (rawDt && typeof rawDt === "string" && rawDt.trim() !== "") return rawDt; // "欠測"などの原文
+      return "異常値";
+    }
+
+    /* =========================================================
+       水位の危険度を基準水位と比較して判定する
+       waiting(待機) < caution(氾濫注意) < evacuation(避難判断)
+         < danger(氾濫危険) < overflow(氾濫発生) の想定
+       ========================================================= */
+    function waterLevelSeverity(level, station) {
+      if (level === null || level === undefined) return { rank: -1, label: "データなし", cls: "muted" };
+
+      const thresholds = [
+        { key: "overflow_level", rank: 5, label: "氾濫発生水位超過", cls: "danger" },
+        { key: "danger_level", rank: 4, label: "氾濫危険水位超過", cls: "danger" },
+        { key: "evacuation_level", rank: 3, label: "避難判断水位超過", cls: "warn" },
+        { key: "caution_level", rank: 2, label: "氾濫注意水位超過", cls: "caution" },
+        { key: "waiting_level", rank: 1, label: "待機水位超過", cls: "notice" },
+      ];
+
+      for (const t of thresholds) {
+        const th = station[t.key];
+        if (th !== null && th !== undefined && level >= th) {
+          return { rank: t.rank, label: t.label, cls: t.cls };
+        }
+      }
+      return { rank: 0, label: "平常", cls: "normal" };
+    }
+
+    /* =========================================================
+       データ取得
+       ========================================================= */
+    async function fetchStations() {
+      const { data, error } = await supabase
+        .from("river_stations")
+        .select("*")
+        .eq("area", AREA)
+        .eq("is_active", true);
+      if (error) throw error;
+      return data ?? [];
+    }
+
+    async function fetchLatestWaterLevels() {
+      const since = new Date(Date.now() - LOOKBACK_MINUTES * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from("water_level_observations")
+        .select("station_id, observed_at, water_level, water_level_change, data_status, raw_data")
+        .gte("observed_at", since)
+        .order("observed_at", { ascending: false });
+      if (error) throw error;
+
+      // 観測所ごとに最新1件だけを残す（降順取得なので最初に出てきたものが最新）
+      const latest = new Map();
+      for (const row of data ?? []) {
+        if (!latest.has(row.station_id)) latest.set(row.station_id, row);
+      }
+      return latest;
+    }
+
+    async function fetchLatestRainfall() {
+      const since = new Date(Date.now() - LOOKBACK_MINUTES * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from("rainfall_observations")
+        .select("station_id, observed_at, rain_10min, rain_cumulative, rainfall_start_at, data_status, raw_data")
+        .gte("observed_at", since)
+        .order("observed_at", { ascending: false });
+      if (error) throw error;
+
+      const latest = new Map();
+      for (const row of data ?? []) {
+        if (!latest.has(row.station_id)) latest.set(row.station_id, row);
+      }
+      return latest;
+    }
+
+    /* =========================================================
+       描画
+       ========================================================= */
+    function formatTime(iso) {
+      if (!iso) return "--:--";
+      const d = new Date(iso);
+      return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function renderWaterStations(stations, latestMap) {
+      const waterStations = stations
+        .filter((s) => s.station_type === "water" || s.station_type === "both")
+        .sort((a, b) => (a.river_name ?? "").localeCompare(b.river_name ?? "", "ja"));
+
+      if (waterStations.length === 0) {
+        waterList.innerHTML = '<div class="loading">対象観測所がありません</div>';
+        return;
+      }
+
+      waterList.innerHTML = waterStations.map((station) => {
+        const obs = latestMap.get(station.id);
+        const level = obs?.water_level ?? null;
+        const severity = waterLevelSeverity(level, station);
+        const anomaly = obs ? statusLabel(obs.data_status, obs.raw_data?.dt) : null;
+
+        const levelText = level !== null
+          ? `${level.toFixed(2)} m`
+          : (anomaly ?? "データなし");
+
+        const changeIcon = obs?.water_level_change > 0
+          ? '<i data-lucide="trending-up"></i>'
+          : obs?.water_level_change < 0
+            ? '<i data-lucide="trending-down"></i>'
+            : "";
+
+        return `
+          <div class="station-card ${severity.cls}">
+            <div class="station-card-main">
+              <div class="station-name">
+                <span class="river-name">${station.river_name ?? ""}</span>
+                ${station.station_name}
+              </div>
+              <div class="station-value">
+                ${levelText} ${changeIcon}
+              </div>
+            </div>
+            <div class="station-sub">
+              <span class="severity-badge ${severity.cls}">${severity.label}</span>
+              <span class="observed-time">${formatTime(obs?.observed_at)}時点</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function renderRainStations(stations, latestMap) {
+      const rainStations = stations
+        .filter((s) => s.station_type === "rainfall" || s.station_type === "both")
+        .sort((a, b) => (a.river_name ?? "").localeCompare(b.river_name ?? "", "ja"));
+
+      if (rainStations.length === 0) {
+        rainList.innerHTML = '<div class="loading">対象観測所がありません</div>';
+        return;
+      }
+
+      rainList.innerHTML = rainStations.map((station) => {
+        const obs = latestMap.get(station.id);
+        const anomaly = obs ? statusLabel(obs.data_status, obs.raw_data?.["1_10"]?.dt) : null;
+
+        const tenMin = obs?.rain_10min ?? null;
+        const cumulative = obs?.rain_cumulative ?? null;
+        const isRaining = tenMin !== null && tenMin > 0;
+
+        const tenMinText = tenMin !== null ? `${tenMin.toFixed(1)} mm` : (anomaly ?? "データなし");
+        const cumulativeText = cumulative !== null ? `${cumulative.toFixed(1)} mm` : "-";
+        const startText = obs?.rainfall_start_at
+          ? `${formatTime(obs.rainfall_start_at)}〜降雨中`
+          : "";
+
+        return `
+          <div class="station-card ${isRaining ? "rain-active" : "normal"}">
+            <div class="station-card-main">
+              <div class="station-name">
+                <span class="river-name">${station.river_name ?? ""}</span>
+                ${station.station_name}
+              </div>
+              <div class="station-value">
+                ${tenMinText}<span class="value-unit-note">/10分</span>
+              </div>
+            </div>
+            <div class="station-sub">
+              <span class="cumulative-note">累計 ${cumulativeText}</span>
+              <span class="observed-time">${startText || (formatTime(obs?.observed_at) + "時点")}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    /* =========================================================
+       メイン処理
+       ========================================================= */
+    async function loadAll() {
+      updateInfo.textContent = "読み込み中...";
+      try {
+        const [stations, waterLatest, rainLatest] = await Promise.all([
+          fetchStations(),
+          fetchLatestWaterLevels(),
+          fetchLatestRainfall(),
+        ]);
+
+        renderWaterStations(stations, waterLatest);
+        renderRainStations(stations, rainLatest);
+
+        updateInfo.textContent = `最終更新: ${new Date().toLocaleTimeString("ja-JP")}`;
+      } catch (e) {
+        console.error(e);
+        updateInfo.textContent = "データの取得に失敗しました";
+      }
+    }
+
+    refreshBtn.addEventListener("click", loadAll);
+
+    loadAll();
+    // 5分ごとに自動更新
+    setInterval(loadAll, 5 * 60 * 1000);
+
+  </script>
+
+</body>
+
+</html>

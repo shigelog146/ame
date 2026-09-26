@@ -1,0 +1,275 @@
+/* =========================================================
+   益田地域 河川水位・雨量情報 スタイル
+   モバイル優先・カード一覧型
+   ========================================================= */
+
+:root {
+  --bg: #eef3f7;
+  --surface: #ffffff;
+  --text: #1f2a33;
+  --muted: #63727d;
+  --line: #dbe4ea;
+  --primary: #1c6ea4;
+  --primary-dark: #124a6f;
+  --primary-tint: #e3f0f8;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --header-h: 52px;
+
+  /* 危険度カラー */
+  --normal: #2f8a4b;
+  --normal-tint: #e7f5eb;
+  --notice: #b58a1a;
+  --notice-tint: #fbf2dd;
+  --caution: #d17a1f;
+  --caution-tint: #fceee0;
+  --warn: #c9501f;
+  --warn-tint: #fbe6dd;
+  --danger: #b8332b;
+  --danger-tint: #f8dedb;
+  --muted-cls: #8a97a0;
+  --muted-tint: #eef1f3;
+
+  --rain-active: #2464b4;
+  --rain-active-tint: #e2ecf9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Hiragino Sans", "Yu Gothic", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.5;
+  padding-top: var(--header-h);
+  padding-bottom: 32px;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* =========================================================
+   ヘッダー（固定・コンパクト）
+   ========================================================= */
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--header-h);
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+  z-index: 10;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.brand i {
+  width: 20px;
+  height: 20px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: #fff;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-btn:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.icon-btn i {
+  width: 20px;
+  height: 20px;
+}
+
+/* =========================================================
+   ページ本体
+   ========================================================= */
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 12px 12px 0;
+}
+
+.update-info {
+  text-align: right;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 4px 4px 12px;
+}
+
+.section {
+  margin-bottom: 24px;
+}
+
+.section h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 18px;
+  padding: 0 4px;
+}
+
+.section h2 i {
+  width: 20px;
+  height: 20px;
+  color: var(--primary);
+}
+
+.loading {
+  color: var(--muted);
+  padding: 16px;
+  text-align: center;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+/* =========================================================
+   観測所カード
+   ========================================================= */
+.station-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.station-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--muted-cls);
+  padding: 10px 12px;
+}
+
+.station-card-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.station-name {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.river-name {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+.station-value {
+  font-size: 20px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.station-value i {
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+}
+
+.value-unit-note {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 2px;
+}
+
+.station-sub {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.severity-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--muted-tint);
+  color: var(--muted-cls);
+}
+
+.cumulative-note {
+  color: var(--muted);
+}
+
+/* 危険度ごとの色分け（左ボーダー・バッジ） */
+.station-card.normal { border-left-color: var(--normal); }
+.severity-badge.normal { background: var(--normal-tint); color: var(--normal); }
+
+.station-card.notice { border-left-color: var(--notice); }
+.severity-badge.notice { background: var(--notice-tint); color: var(--notice); }
+
+.station-card.caution { border-left-color: var(--caution); }
+.severity-badge.caution { background: var(--caution-tint); color: var(--caution); }
+
+.station-card.warn { border-left-color: var(--warn); }
+.severity-badge.warn { background: var(--warn-tint); color: var(--warn); }
+
+.station-card.danger { border-left-color: var(--danger); }
+.severity-badge.danger { background: var(--danger-tint); color: var(--danger); }
+
+.station-card.muted { border-left-color: var(--muted-cls); }
+.severity-badge.muted { background: var(--muted-tint); color: var(--muted-cls); }
+
+/* 雨量：降雨中カード */
+.station-card.rain-active { border-left-color: var(--rain-active); background: var(--rain-active-tint); }
+.station-card.rain-active .station-value { color: var(--rain-active); }
+
+/* =========================================================
+   レスポンシブ
+   ========================================================= */
+@media (min-width: 480px) {
+  .station-card-main {
+    align-items: center;
+  }
+}
