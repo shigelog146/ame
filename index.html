@@ -28,6 +28,14 @@
 
   <main class="page">
 
+    <!-- =========================================================
+         免責事項（仕様書2章: 必須表示）
+         ========================================================= -->
+    <div class="disclaimer">
+      <i data-lucide="alert-triangle"></i>
+      本システムの予測値は、過去の雨量・水位データ等から独自に算出した参考値です。災害時には自治体・気象庁・島根県等が発表する最新の防災情報を優先してください。
+    </div>
+
     <div id="updateInfo" class="update-info">読み込み中...</div>
 
     <!-- =========================================================
@@ -69,6 +77,7 @@
       <div class="chart-wrap">
         <canvas id="historyChart"></canvas>
       </div>
+      <div id="predictionSummary" class="prediction-summary"></div>
       <div id="chartLoading" class="loading" style="display:none;">読み込み中...</div>
     </div>
   </dialog>
@@ -89,6 +98,10 @@
 
     // 過去何分ぶんの観測データを取得するか（この範囲の中から各観測所の最新1件を拾う）
     const LOOKBACK_MINUTES = 180;
+
+    // predict-water-level Edge Function と揃える必要がある値
+    const MODEL_VERSION = "v1-linear-extrapolation";
+    const SCENARIO = "trend_continues";
 
     const updateInfo = document.getElementById("updateInfo");
     const waterList = document.getElementById("waterList");
@@ -176,6 +189,25 @@
       return latest;
     }
 
+    // 一覧カード用: 各観測所の「1時間後(参考)」予測値だけをまとめて取得
+    async function fetchLatestOneHourPredictions() {
+      const { data, error } = await supabase
+        .from("predictions")
+        .select("station_id, base_observed_at, predicted_level")
+        .eq("prediction_minutes", 60)
+        .eq("model_version", MODEL_VERSION)
+        .eq("scenario", SCENARIO)
+        .order("base_observed_at", { ascending: false })
+        .limit(200);
+      if (error) throw error;
+
+      const latest = new Map();
+      for (const row of data ?? []) {
+        if (!latest.has(row.station_id)) latest.set(row.station_id, row);
+      }
+      return latest;
+    }
+
     async function fetchWaterHistory(stationId, hours) {
       const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
       const { data, error } = await supabase
@@ -200,6 +232,24 @@
       return data ?? [];
     }
 
+    // 観測所詳細のグラフダイアログ用: 最新base_observed_at分の予測(30/60/120/180/360分後)を取得
+    async function fetchLatestPredictionsForStation(stationId) {
+      const { data, error } = await supabase
+        .from("predictions")
+        .select("base_observed_at, prediction_minutes, predicted_level")
+        .eq("station_id", stationId)
+        .eq("model_version", MODEL_VERSION)
+        .eq("scenario", SCENARIO)
+        .order("base_observed_at", { ascending: false })
+        .order("prediction_minutes", { ascending: true })
+        .limit(20); // 直近の複数base分をまとめて取得し、最新base分だけをJS側で抽出
+      if (error) throw error;
+      const rows = data ?? [];
+      if (rows.length === 0) return [];
+      const latestBase = rows[0].base_observed_at;
+      return rows.filter((r) => r.base_observed_at === latestBase);
+    }
+
     /* =========================================================
        描画
        ========================================================= */
@@ -209,7 +259,7 @@
       return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
     }
 
-    function renderWaterStations(stations, latestMap) {
+    function renderWaterStations(stations, latestMap, predictionMap) {
       const waterStations = stations
         .filter((s) => s.station_type === "water" || s.station_type === "both")
         .sort((a, b) => (a.river_name ?? "").localeCompare(b.river_name ?? "", "ja"));
@@ -235,6 +285,11 @@
             ? '<i data-lucide="trending-down"></i>'
             : "";
 
+        const pred = predictionMap.get(station.id);
+        const predText = pred
+          ? `<span class="prediction-note">1時間後(参考) ${pred.predicted_level.toFixed(2)} m</span>`
+          : "";
+
         return `
           <div class="station-card clickable ${severity.cls}" data-station-id="${station.id}" data-obs-type="water">
             <div class="station-card-main">
@@ -250,6 +305,7 @@
               <span class="severity-badge ${severity.cls}">${severity.label}</span>
               <span class="observed-time">${formatTime(obs?.observed_at)}時点</span>
             </div>
+            ${predText ? `<div class="station-sub">${predText}</div>` : ""}
           </div>
         `;
       }).join("");
@@ -314,6 +370,7 @@
     const chartDialogTitle = document.getElementById("chartDialogTitle");
     const chartLoading = document.getElementById("chartLoading");
     const historyCanvas = document.getElementById("historyChart");
+    const predictionSummary = document.getElementById("predictionSummary");
     const rangeButtons = document.querySelectorAll(".range-btn");
 
     const THRESHOLD_DEFS = [
@@ -338,30 +395,70 @@
 
     async function renderWaterChart(station, hours) {
       const rows = await fetchWaterHistory(station.id, hours);
-      const labels = rows.map((r) => chartLabel(r.observed_at));
+      const historyLabels = rows.map((r) => chartLabel(r.observed_at));
       const levels = rows.map((r) => r.water_level);
 
-      const datasets = [
-        {
-          label: "水位 (m)",
-          data: levels,
+      // 予測（参考値）。仕様書36章: 実測=実線、予測=点線で同じグラフに重ねる
+      let predictions = [];
+      try {
+        predictions = await fetchLatestPredictionsForStation(station.id);
+      } catch (e) {
+        console.error("予測の取得に失敗:", e);
+      }
+
+      const lastHistoryLevel = levels.length > 0 ? levels[levels.length - 1] : null;
+      const showForecast = predictions.length > 0 && lastHistoryLevel !== null;
+
+      const forecastLabels = showForecast
+        ? predictions.map((p) => {
+            const t = new Date(new Date(p.base_observed_at).getTime() + p.prediction_minutes * 60000);
+            return chartLabel(t.toISOString());
+          })
+        : [];
+
+      const combinedLabels = [...historyLabels, ...forecastLabels];
+
+      const historyDataset = {
+        label: "水位 (m)・実測",
+        data: [...levels, ...forecastLabels.map(() => null)],
+        borderColor: "#1c6ea4",
+        backgroundColor: "rgba(28,110,164,0.12)",
+        fill: true,
+        spanGaps: true,
+        tension: 0.2,
+        pointRadius: 0,
+      };
+
+      const datasets = [historyDataset];
+
+      if (showForecast) {
+        // 実測の最後の点から予測点へ視覚的につながるよう、
+        // 実測部分はnullで埋め、最後の実測値だけ接続点として入れる
+        const forecastData = [
+          ...historyLabels.slice(0, -1).map(() => null),
+          lastHistoryLevel,
+          ...predictions.map((p) => p.predicted_level),
+        ];
+        datasets.push({
+          label: "水位 (m)・予測(参考)",
+          data: forecastData,
           borderColor: "#1c6ea4",
-          backgroundColor: "rgba(28,110,164,0.12)",
-          fill: true,
+          borderDash: [6, 4],
+          fill: false,
           spanGaps: true,
           tension: 0.2,
-          pointRadius: 0,
-        },
-      ];
+          pointRadius: 2,
+        });
+      }
 
       for (const t of THRESHOLD_DEFS) {
         const value = station[t.key];
         if (value === null || value === undefined) continue;
         datasets.push({
           label: t.label,
-          data: labels.map(() => value),
+          data: combinedLabels.map(() => value),
           borderColor: t.color,
-          borderDash: [6, 4],
+          borderDash: [2, 3],
           pointRadius: 0,
           borderWidth: 1,
         });
@@ -370,7 +467,7 @@
       destroyChart();
       currentChart = new Chart(historyCanvas, {
         type: "line",
-        data: { labels, datasets },
+        data: { labels: combinedLabels, datasets },
         options: {
           responsive: true,
           interaction: { mode: "index", intersect: false },
@@ -380,9 +477,38 @@
           },
         },
       });
+
+      renderPredictionSummary(predictions);
+    }
+
+    function predictionMinutesLabel(minutes) {
+      if (minutes < 60) return `${minutes}分後`;
+      return `${minutes / 60}時間後`;
+    }
+
+    function renderPredictionSummary(predictions) {
+      if (!predictions || predictions.length === 0) {
+        predictionSummary.innerHTML = "";
+        return;
+      }
+      predictionSummary.innerHTML = `
+        <div class="prediction-summary-title">水位予測シミュレーション（参考）</div>
+        <div class="prediction-summary-row">
+          ${predictions.map((p) => `
+            <div class="prediction-summary-item">
+              <div class="prediction-summary-label">${predictionMinutesLabel(p.prediction_minutes)}</div>
+              <div class="prediction-summary-value">${p.predicted_level.toFixed(2)} m</div>
+            </div>
+          `).join("")}
+        </div>
+        <div class="prediction-summary-note">
+          現在の水位変化傾向がそのまま続いた場合の単純外挿による参考値です。断定的な予測ではありません。
+        </div>
+      `;
     }
 
     async function renderRainChart(station, hours) {
+      predictionSummary.innerHTML = "";
       const rows = await fetchRainHistory(station.id, hours);
       const labels = rows.map((r) => chartLabel(r.observed_at));
 
@@ -454,6 +580,7 @@
     chartDialog.addEventListener("close", () => {
       destroyChart();
       chartLoading.textContent = "読み込み中...";
+      predictionSummary.innerHTML = "";
       rangeButtons.forEach((b) => b.classList.toggle("active", b.dataset.hours === "24"));
     });
 
@@ -484,15 +611,16 @@
     async function loadAll() {
       updateInfo.textContent = "読み込み中...";
       try {
-        const [stations, waterLatest, rainLatest] = await Promise.all([
+        const [stations, waterLatest, rainLatest, predictionLatest] = await Promise.all([
           fetchStations(),
           fetchLatestWaterLevels(),
           fetchLatestRainfall(),
+          fetchLatestOneHourPredictions(),
         ]);
 
         stationsById = new Map(stations.map((s) => [s.id, s]));
 
-        renderWaterStations(stations, waterLatest);
+        renderWaterStations(stations, waterLatest, predictionLatest);
         renderRainStations(stations, rainLatest);
 
         updateInfo.textContent = `最終更新: ${new Date().toLocaleTimeString("ja-JP")}`;
