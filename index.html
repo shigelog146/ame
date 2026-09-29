@@ -393,6 +393,20 @@
       return d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     }
 
+    // 水位グラフのY軸上限を「実測・予測データの最大値」から計算する。
+    // 危険水位等の基準線は考慮しない（基準線が実データよりずっと高い場合、
+    // グラフが基準線に合わせて間延びし実データの変化が見えなくなるため）。
+    function computeWaterAxisMax(levels, predictions) {
+      const values = [
+        ...levels.filter((v) => v !== null && v !== undefined),
+        ...predictions.map((p) => p.predicted_level).filter((v) => v !== null && v !== undefined),
+      ];
+      if (values.length === 0) return undefined; // データが無ければChart.jsの自動計算に任せる
+      const dataMax = Math.max(...values);
+      const padding = Math.max(dataMax * 0.3, 0.3); // 最大値の30%、最低0.3mの余白
+      return dataMax + padding;
+    }
+
     async function renderWaterChart(station, hours) {
       const rows = await fetchWaterHistory(station.id, hours);
       const historyLabels = rows.map((r) => chartLabel(r.observed_at));
@@ -473,7 +487,11 @@
           interaction: { mode: "index", intersect: false },
           plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
           scales: {
-            y: { title: { display: true, text: "水位 (m)" } },
+            y: {
+              title: { display: true, text: "水位 (m)" },
+              suggestedMin: 0,
+              max: computeWaterAxisMax(levels, predictions),
+            },
           },
         },
       });
