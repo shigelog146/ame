@@ -73,6 +73,9 @@
         <button class="range-btn active" data-hours="24">24時間</button>
         <button class="range-btn" data-hours="72">3日間</button>
         <button class="range-btn" data-hours="168">7日間</button>
+        <button class="range-btn" data-hours="720">30日間</button>
+        <button class="range-btn" data-hours="4320">半年</button>
+        <button class="range-btn" data-hours="8760">1年</button>
       </div>
       <div class="chart-wrap">
         <canvas id="historyChart"></canvas>
@@ -208,26 +211,69 @@
       return latest;
     }
 
+    // Supabaseは1回の取得が最大1000件までのため、1000件ずつ繰り返して全件取得する
+    // （7日分の10分データは約1008件あり、従来は末尾数件が欠けていた）
+    async function fetchAllRows(buildQuery) {
+      const PAGE = 1000;
+      let all = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await buildQuery().range(from, from + PAGE - 1);
+        if (error) throw error;
+        all = all.concat(data ?? []);
+        if (!data || data.length < PAGE) break;
+      }
+      return all;
+    }
+
     async function fetchWaterHistory(stationId, hours) {
       const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-      const { data, error } = await supabase
+      return fetchAllRows(() => supabase
         .from("water_level_observations")
         .select("observed_at, water_level")
         .eq("station_id", stationId)
         .gte("observed_at", since)
-        .order("observed_at", { ascending: true });
-      if (error) throw error;
-      return data ?? [];
+        .order("observed_at", { ascending: true }));
     }
 
     async function fetchRainHistory(stationId, hours) {
       const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-      const { data, error } = await supabase
+      return fetchAllRows(() => supabase
         .from("rainfall_observations")
         .select("observed_at, rain_10min, rain_cumulative")
         .eq("station_id", stationId)
         .gte("observed_at", since)
-        .order("observed_at", { ascending: true });
+        .order("observed_at", { ascending: true }));
+    }
+
+    // ---- 長期間（7日超）用: DB側で集計したデータを取得する ----
+    // 7日(168時間)を超える期間は10分データをそのまま描画せず、
+    // 集計済みデータ（水位=平均/最高/最低、雨量=合計）を使う
+    const LONG_RANGE_HOURS = 168;
+
+    function bucketMinutesFor(hours) {
+      if (hours <= 720) return 60;    // 30日以内 → 1時間ごと（最大720点）
+      if (hours <= 4320) return 360;  // 半年以内 → 6時間ごと（最大720点）
+      return 1440;                    // 1年 → 1日ごと（最大365点）
+    }
+
+    async function fetchWaterSeries(stationId, hours) {
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase.rpc("get_water_level_series", {
+        p_station_id: stationId,
+        p_since: since,
+        p_bucket_minutes: bucketMinutesFor(hours),
+      });
+      if (error) throw error;
+      return data ?? [];
+    }
+
+    async function fetchRainSeries(stationId, hours) {
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase.rpc("get_rainfall_series", {
+        p_station_id: stationId,
+        p_since: since,
+        p_bucket_minutes: bucketMinutesFor(hours),
+      });
       if (error) throw error;
       return data ?? [];
     }
@@ -393,6 +439,14 @@
       return d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     }
 
+    // 長期間グラフ用のラベル（30日以内は「月/日 時」、それより長い期間は「月/日」）
+    function longChartLabel(iso, hours) {
+      const d = new Date(iso);
+      return hours <= 720
+        ? d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit" })
+        : d.toLocaleString("ja-JP", { month: "numeric", day: "numeric" });
+    }
+
     // 水位グラフのY軸上限を「実測・予測データの最大値」から計算する。
     // 危険水位等の基準線は考慮しない（基準線が実データよりずっと高い場合、
     // グラフが基準線に合わせて間延びし実データの変化が見えなくなるため）。
@@ -407,7 +461,83 @@
       return dataMax + padding;
     }
 
+    // 長期間（30日・半年・1年）の水位グラフ: 平均・最高・最低を表示
+    async function renderWaterChartLong(station, hours) {
+      predictionSummary.innerHTML = ""; // 長期間では予測は表示しない
+      const rows = await fetchWaterSeries(station.id, hours);
+      const labels = rows.map((r) => longChartLabel(r.bucket_at, hours));
+      const maxValues = rows.map((r) => (r.max_level === null ? null : Number(r.max_level)));
+
+      const datasets = [
+        {
+          label: "最高水位 (m)",
+          data: maxValues,
+          borderColor: "#c9501f",
+          backgroundColor: "rgba(28,110,164,0.12)",
+          fill: 2, // 最高〜最低の間を薄く塗る（datasets[2]=最低水位まで）
+          spanGaps: true,
+          tension: 0.2,
+          pointRadius: 0,
+          borderWidth: 1,
+        },
+        {
+          label: "平均水位 (m)",
+          data: rows.map((r) => (r.avg_level === null ? null : Number(r.avg_level))),
+          borderColor: "#1c6ea4",
+          fill: false,
+          spanGaps: true,
+          tension: 0.2,
+          pointRadius: 0,
+        },
+        {
+          label: "最低水位 (m)",
+          data: rows.map((r) => (r.min_level === null ? null : Number(r.min_level))),
+          borderColor: "#7aa7c7",
+          fill: false,
+          spanGaps: true,
+          tension: 0.2,
+          pointRadius: 0,
+          borderWidth: 1,
+        },
+      ];
+
+      for (const t of THRESHOLD_DEFS) {
+        const value = station[t.key];
+        if (value === null || value === undefined) continue;
+        datasets.push({
+          label: t.label,
+          data: labels.map(() => value),
+          borderColor: t.color,
+          borderDash: [2, 3],
+          pointRadius: 0,
+          borderWidth: 1,
+        });
+      }
+
+      destroyChart();
+      currentChart = new Chart(historyCanvas, {
+        type: "line",
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
+          scales: {
+            x: { ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+            y: {
+              title: { display: true, text: "水位 (m)" },
+              suggestedMin: 0,
+              max: computeWaterAxisMax(maxValues, []),
+            },
+          },
+        },
+      });
+    }
+
     async function renderWaterChart(station, hours) {
+      if (hours > LONG_RANGE_HOURS) {
+        return renderWaterChartLong(station, hours);
+      }
       const rows = await fetchWaterHistory(station.id, hours);
       const historyLabels = rows.map((r) => chartLabel(r.observed_at));
       const levels = rows.map((r) => r.water_level);
@@ -525,8 +655,60 @@
       `;
     }
 
+    // 長期間（30日・半年・1年）の雨量グラフ: 期間ごとの合計雨量 + 期間内の累計
+    async function renderRainChartLong(station, hours) {
+      const rows = await fetchRainSeries(station.id, hours);
+      const labels = rows.map((r) => longChartLabel(r.bucket_at, hours));
+
+      let running = 0;
+      const runningTotals = rows.map((r) => {
+        running += Number(r.total_rain ?? 0);
+        return Math.round(running * 10) / 10;
+      });
+
+      const bucketLabel = bucketMinutesFor(hours) === 60 ? "1時間" : (bucketMinutesFor(hours) === 360 ? "6時間" : "1日");
+
+      destroyChart();
+      currentChart = new Chart(historyCanvas, {
+        data: {
+          labels,
+          datasets: [
+            {
+              type: "bar",
+              label: `${bucketLabel}ごとの雨量 (mm)`,
+              data: rows.map((r) => (r.total_rain === null ? null : Number(r.total_rain))),
+              backgroundColor: "#2464b4",
+              yAxisID: "y",
+            },
+            {
+              type: "line",
+              label: "期間内の累計 (mm)",
+              data: runningTotals,
+              borderColor: "#b58a1a",
+              pointRadius: 0,
+              spanGaps: true,
+              yAxisID: "y1",
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } },
+          scales: {
+            x: { ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+            y: { position: "left", title: { display: true, text: `${bucketLabel}雨量 (mm)` }, beginAtZero: true },
+            y1: { position: "right", title: { display: true, text: "累計 (mm)" }, beginAtZero: true, grid: { drawOnChartArea: false } },
+          },
+        },
+      });
+    }
+
     async function renderRainChart(station, hours) {
       predictionSummary.innerHTML = "";
+      if (hours > LONG_RANGE_HOURS) {
+        return renderRainChartLong(station, hours);
+      }
       const rows = await fetchRainHistory(station.id, hours);
       const labels = rows.map((r) => chartLabel(r.observed_at));
 

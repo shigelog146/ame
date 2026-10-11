@@ -341,12 +341,13 @@ dialog::backdrop {
 
 .chart-range-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 12px;
 }
 
 .range-btn {
-  flex: 1;
+  flex: 1 1 30%;
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--muted);
